@@ -1,0 +1,6 @@
+.env
+__pycache__/
+.pytest_cache/
+tickets.db
+chroma_db/
+myenv/
