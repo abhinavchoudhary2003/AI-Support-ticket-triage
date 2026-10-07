@@ -1,12 +1,72 @@
-# AI Support Ticket Triage & Resolution Assistant
+<div align="center">
 
-A FastAPI service that reads a customer support ticket, classifies it, looks up the answer in a policy knowledge base, and then either replies automatically or routes the ticket to a human. A Streamlit console is included for demos.
+# 🎫 AI Support Ticket Triage & Resolution Assistant
 
-**Design principle:** when anything is uncertain, risky or broken, the ticket goes to a human. The AI only answers when the rules allow it *and* the answer can be checked against the knowledge base.
+**Reads a support ticket, classifies it, checks the policy knowledge base, then replies automatically or routes it to a human.**
 
-## How a ticket is processed
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-FF6446?style=for-the-badge)
+![Groq](https://img.shields.io/badge/Groq-F55036?style=for-the-badge)
+![pytest](https://img.shields.io/badge/pytest-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-35%20passing-brightgreen?style=for-the-badge)
 
+[How it works](#-how-a-ticket-is-processed) •
+[Escalation rules](#-escalation-rules) •
+[Safety](#-safety-measures) •
+[Setup](#-setup) •
+[API](#-api) •
+[Tests](#-tests)
+
+</div>
+
+---
+
+A **FastAPI** service that reads a customer support ticket, classifies it, looks up the answer in a policy knowledge base, and then either replies automatically or routes the ticket to a human. A **Streamlit** console is included for demos.
+
+> [!IMPORTANT]
+> **Design principle:** when anything is uncertain, risky or broken, the ticket goes to a human. The AI only answers when the rules allow it and the answer can be checked against the knowledge base.
+
+## 📑 Table of contents
+
+- [How a ticket is processed](#-how-a-ticket-is-processed)
+- [Escalation rules](#-escalation-rules)
+- [Safety measures](#-safety-measures)
+- [Tech stack](#-tech-stack)
+- [Project structure](#-project-structure)
+- [Setup](#-setup)
+- [Run](#-run)
+- [API](#-api)
+- [Adding documents](#-adding-documents)
+- [Tests](#-tests)
+- [Known limitations](#-known-limitations)
+
+---
+
+## 🔄 How a ticket is processed
+
+```mermaid
+flowchart TD
+    T([🎫 Ticket]) --> S1["1️⃣ Prompt-injection scan<br/>(rules, no LLM)"]
+    S1 -- flagged --> H([👤 Human])
+    S1 --> S2["2️⃣ Classify: category, priority,<br/>sentiment, confidence (Groq LLM)"]
+    S2 -- error --> H
+    S2 --> S3["3️⃣ Retrieve top 4 policy chunks<br/>(MiniLM embeddings + Chroma, cosine)"]
+    S3 -- error --> H
+    S3 --> S4["4️⃣ Escalation rules<br/>(deterministic code)"]
+    S4 -- "any rule hit (holding message)" --> H
+    S4 --> S5["5️⃣ Generate answer as JSON:<br/>answerable, answer, evidence, sources (Groq LLM)"]
+    S5 -- error --> H
+    S5 --> S6["6️⃣ Grounding check in code"]
+    S6 -- not verified --> H
+    S6 --> AI([🤖 AI reply, saved with the sources that were retrieved])
 ```
+
+<details>
+<summary>📝 Text version of the flow</summary>
+
+```text
 Ticket
   |
   v
@@ -31,40 +91,61 @@ Ticket
 AI reply, saved with the sources that were retrieved
 ```
 
-Escalated tickets always get a fixed holding message, never an AI-written reply.
+</details>
 
-## Escalation rules
+> [!NOTE]
+> Escalated tickets always get a **fixed holding message**, never an AI-written reply.
 
-Checked in this order, first match wins (`app/rules.py`):
+---
+
+## 🚦 Escalation rules
+
+Checked in this order, **first match wins** (`app/rules.py`):
 
 | # | Rule | Result |
-|---|------|--------|
-| 1 | Possible prompt injection | Human |
-| 2 | Priority is Critical | Human |
-| 3 | Classification confidence below 0.70 | Human |
-| 4 | Legal threat (lawyer, sue, court, legal action, ...) | Human |
-| 5 | Knowledge-base coverage below 0.50 | Human |
-| 6 | Money request above $200, or above 100 in another or unstated currency | Human |
-| 7 | None of the above | AI |
+|:-:|------|:------:|
+| 1 | Possible prompt injection | 👤 Human |
+| 2 | Priority is Critical | 👤 Human |
+| 3 | Classification confidence below 0.70 | 👤 Human |
+| 4 | Legal threat (lawyer, sue, court, legal action, ...) | 👤 Human |
+| 5 | Knowledge-base coverage below 0.50 | 👤 Human |
+| 6 | Money request above $200, or above 100 in another or unstated currency | 👤 Human |
+| 7 | None of the above | 🤖 AI |
 
-Notes:
-- Legal terms are matched as whole words, so "issue" and "courtesy" do not trigger the rule.
-- The money rule runs on the ticket text, not only on the LLM's category. A $1,200 "please reverse this charge" ticket labelled Billing is still escalated.
+**Notes:**
 
-## Safety measures
+- Legal terms are matched as **whole words**, so "issue" and "courtesy" do not trigger the rule.
+- The money rule runs on the **ticket text**, not only on the LLM's category. A $1,200 "please reverse this charge" ticket labelled Billing is still escalated.
 
-- **Prompt injection:** the ticket text is normalised (case, unicode, zero-width characters, spacing) and matched against injection patterns. Flagged tickets never reach the LLM. In both prompts the ticket is wrapped in `<ticket>` tags and treated as untrusted data.
-- **Grounded answers:** the model must return `answerable`, the `answer`, a word-for-word `evidence` quote, and the numbers of the excerpts it used. The code escalates unless `answerable` is true, every cited excerpt exists, and the quote really appears in a cited excerpt.
-- **Failures fail safe:** if the LLM or the retrieval step raises an error, the ticket is saved as Human with a reason ("AI service unavailable" or "Knowledge base unavailable") instead of returning a 500.
-- **Input limits:** subject 3 to 200 characters, message 5 to 5,000 characters, whitespace trimmed. Invalid input returns 422.
+---
 
-## Tech stack
+## 🛡️ Safety measures
 
-FastAPI, SQLite, ChromaDB with `sentence-transformers` MiniLM embeddings (cosine similarity), Groq via the OpenAI-compatible client (`openai/gpt-oss-20b`), Streamlit, pytest.
+| | Measure | Details |
+|:-:|---------|---------|
+| 💉 | **Prompt injection** | The ticket text is normalised (case, unicode, zero-width characters, spacing) and matched against injection patterns. Flagged tickets never reach the LLM. In both prompts the ticket is wrapped in `<ticket>` tags and treated as untrusted data. |
+| 📚 | **Grounded answers** | The model must return `answerable`, the answer, a word-for-word `evidence` quote, and the numbers of the excerpts it used. The code escalates unless `answerable` is true, every cited excerpt exists, and the quote really appears in a cited excerpt. |
+| 🧯 | **Failures fail safe** | If the LLM or the retrieval step raises an error, the ticket is saved as Human with a reason ("AI service unavailable" or "Knowledge base unavailable") instead of returning a 500. |
+| 📏 | **Input limits** | Subject 3 to 200 characters, message 5 to 5,000 characters, whitespace trimmed. Invalid input returns `422`. |
 
-## Project structure
+---
 
-```
+## 🧰 Tech stack
+
+| Layer | Technology |
+|-------|------------|
+| API | FastAPI |
+| Storage | SQLite |
+| Vector search | ChromaDB with sentence-transformers MiniLM embeddings (cosine similarity) |
+| LLM | Groq via the OpenAI-compatible client (`openai/gpt-oss-20b`) |
+| Demo UI | Streamlit |
+| Testing | pytest |
+
+---
+
+## 🗂️ Project structure
+
+```text
 app/
   main.py        API endpoints
   models.py      Pydantic models and enums
@@ -80,7 +161,9 @@ requirements.txt
 .env.example
 ```
 
-## Setup
+---
+
+## ⚙️ Setup
 
 ```bash
 python -m venv myenv
@@ -89,48 +172,54 @@ myenv\Scripts\activate          # Windows
 pip install -r requirements.txt
 ```
 
-There is no separate indexing step. The vector index is rebuilt automatically from `knowledge_base/` every time the app starts. The first run downloads the `all-MiniLM-L6-v2` embedding model, so an internet connection is needed once.
+> [!NOTE]
+> There is no separate indexing step. The vector index is rebuilt automatically from `knowledge_base/` every time the app starts. The first run downloads the `all-MiniLM-L6-v2` embedding model, so an internet connection is needed once.
 
 Create a `.env` file (see `.env.example`):
 
-```
+```env
 GROQ_API_KEY=your_key_here
 ```
 
-Never commit `.env`.
+> [!WARNING]
+> Never commit `.env`.
 
-## Run
+---
 
-API:
+## ▶️ Run
+
+**API:**
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-Interactive docs are at `http://127.0.0.1:8000/docs`.
+Interactive docs are at <http://127.0.0.1:8000/docs>.
 
-Demo console (starts the API automatically if it is not running):
+**Demo console** (starts the API automatically if it is not running):
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
-## API
+---
+
+## 🔌 API
 
 | Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| POST | `/tickets` | Process and save a ticket |
-| GET | `/tickets` | List tickets, newest first (without sources) |
-| GET | `/tickets/{id}` | One ticket, including the sources that were retrieved |
+|:------:|------|-------------|
+| `GET` | `/health` | Health check |
+| `POST` | `/tickets` | Process and save a ticket |
+| `GET` | `/tickets` | List tickets, newest first (without sources) |
+| `GET` | `/tickets/{id}` | One ticket, including the sources that were retrieved |
 
-Example request:
+**Example request:**
 
 ```json
 {"subject": "Password reset", "message": "How do I reset my password?"}
 ```
 
-Example response (retrieved text shortened):
+**Example response** (retrieved text shortened):
 
 ```json
 {
@@ -160,19 +249,30 @@ Example response (retrieved text shortened):
 
 `resolution` is `AI` or `Human`. `escalation_reason` explains the decision either way.
 
-## Adding documents
+---
+
+## 📥 Adding documents
 
 Put PDFs in `knowledge_base/`. Each document is split into one chunk per numbered section heading (for example `1.1 Password reset`), so documents need headings in that format. Restart the app to re-index.
 
-## Tests
+---
+
+## 🧪 Tests
 
 ```bash
 python -m pytest tests -v
 ```
 
-The tests use a temporary database and mock the LLM and retrieval, so they make no Groq calls and never touch `tickets.db`. Keep a `.env` file with any placeholder `GROQ_API_KEY` value in place, because the app creates its client when it is imported. They cover the escalation rules, prompt-injection detection, failure fallbacks, the grounding check and input validation.
+The tests use a temporary database and mock the LLM and retrieval, so they make no Groq calls and never touch `tickets.db`.
 
-## Known limitations
+> [!TIP]
+> Keep a `.env` file with any placeholder `GROQ_API_KEY` value in place, because the app creates its client when it is imported.
+
+They cover the escalation rules, prompt-injection detection, failure fallbacks, the grounding check and input validation.
+
+---
+
+## ⚠️ Known limitations
 
 - Injection detection is pattern-based, so a new phrasing can slip past the first layer. The prompts also treat ticket text as data, and escalation never depends on what the model says about itself.
 - The grounding check verifies that the cited quote exists in a cited excerpt. It cannot prove the excerpt fully supports every sentence of the answer.
