@@ -12,7 +12,7 @@
 ![pytest](https://img.shields.io/badge/pytest-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-35%20passing-brightgreen?style=for-the-badge)
 
-[How it works](#-how-a-ticket-is-processed) •
+[Architecture](#-architecture-and-how-a-ticket-is-processed) •
 [Escalation rules](#-escalation-rules) •
 [Safety](#-safety-measures) •
 [Setup](#-setup) •
@@ -30,7 +30,7 @@ A **FastAPI** service that reads a customer support ticket, classifies it, looks
 
 ## 📑 Table of contents
 
-- [How a ticket is processed](#-how-a-ticket-is-processed)
+- [Architecture and how a ticket is processed](#-architecture-and-how-a-ticket-is-processed)
 - [Escalation rules](#-escalation-rules)
 - [Safety measures](#-safety-measures)
 - [Tech stack](#-tech-stack)
@@ -44,23 +44,47 @@ A **FastAPI** service that reads a customer support ticket, classifies it, looks
 
 ---
 
-## 🔄 How a ticket is processed
+## 🔄 Architecture and how a ticket is processed
 
 ```mermaid
 flowchart TD
-    T([🎫 Ticket]) --> S1["1️⃣ Prompt-injection scan<br/>(rules, no LLM)"]
-    S1 -- flagged --> H([👤 Human])
-    S1 --> S2["2️⃣ Classify: category, priority,<br/>sentiment, confidence (Groq LLM)"]
-    S2 -- error --> H
-    S2 --> S3["3️⃣ Retrieve top 4 policy chunks<br/>(MiniLM embeddings + Chroma, cosine)"]
-    S3 -- error --> H
-    S3 --> S4["4️⃣ Escalation rules<br/>(deterministic code)"]
-    S4 -- "any rule hit (holding message)" --> H
-    S4 --> S5["5️⃣ Generate answer as JSON:<br/>answerable, answer, evidence, sources (Groq LLM)"]
-    S5 -- error --> H
-    S5 --> S6["6️⃣ Grounding check in code"]
-    S6 -- not verified --> H
-    S6 --> AI([🤖 AI reply, saved with the sources that were retrieved])
+    A(["Customer ticket"]) --> B("Streamlit UI")
+    B --> C("FastAPI<br/>POST /tickets")
+    C --> D{"Prompt injection<br/>check"}
+    D -- safe --> E("Classification, priority, sentiment<br/>(Groq gpt-oss-20b)")
+    D -- detected --> J("Escalated to human")
+    E --> F("Semantic retrieval<br/>top-k, cosine similarity")
+    F --> G("Grounded generation<br/>answer from retrieved context only")
+    G --> H{"Escalation<br/>rules"}
+    H -- no rule fires --> I("Resolved by AI")
+    H -- any rule fires --> J
+    I --> K[("SQLite")]
+    J --> K
+    K --> L("GET /tickets<br/>GET /tickets/&#123;id&#125;")
+
+    subgraph KB ["Knowledge base ingestion (at startup)"]
+        direction TB
+        P("KB PDFs<br/>account, billing, refund, technical") --> Q("Chunk + embed<br/>(all-MiniLM-L6-v2)")
+        Q --> R[("ChromaDB")]
+    end
+
+    R -.-> F
+    E -. "priority, legal threat,<br/>refund amount, confidence" .-> H
+    F -. "similarity /<br/>missing KB info" .-> H
+
+    classDef step fill:#eef1f8,stroke:#5b677d,color:#1f2937;
+    classDef decision fill:#fdf2dc,stroke:#5b677d,color:#1f2937;
+    classDef store fill:#e6eaff,stroke:#5b677d,color:#1f2937;
+    classDef ok fill:#e3f4ef,stroke:#0f8a74,color:#0b4f43;
+    classDef bad fill:#fbe7e3,stroke:#c0392b,color:#7a2118;
+    class B,C,E,F,G,L,P,Q,A step;
+    class D,H decision;
+    class R,K store;
+    class I ok;
+    class J bad;
+    linkStyle 4 stroke:#c0392b,color:#c0392b;
+    linkStyle 9 stroke:#c0392b,color:#c0392b;
+    linkStyle 8 stroke:#0f8a74,color:#0f8a74;
 ```
 
 <details>
