@@ -60,7 +60,7 @@ flowchart TD
     H -- any rule fires --> J
     I --> K[("SQLite")]
     J --> K
-    K --> L("GET /tickets<br/>GET /tickets/&#123;id&#125;")
+    K --> L("GET /tickets<br/>GET /tickets/{id}")
 
     subgraph KB ["Knowledge base ingestion (at startup)"]
         direction TB
@@ -72,19 +72,19 @@ flowchart TD
     E -. "priority, legal threat,<br/>refund amount, confidence" .-> H
     F -. "similarity /<br/>missing KB info" .-> H
 
-    classDef step fill:#eef1f8,stroke:#5b677d,color:#1f2937;
-    classDef decision fill:#fdf2dc,stroke:#5b677d,color:#1f2937;
-    classDef store fill:#e6eaff,stroke:#5b677d,color:#1f2937;
-    classDef ok fill:#e3f4ef,stroke:#0f8a74,color:#0b4f43;
-    classDef bad fill:#fbe7e3,stroke:#c0392b,color:#7a2118;
-    class B,C,E,F,G,L,P,Q,A step;
-    class D,H decision;
-    class R,K store;
-    class I ok;
-    class J bad;
-    linkStyle 4 stroke:#c0392b,color:#c0392b;
-    linkStyle 9 stroke:#c0392b,color:#c0392b;
-    linkStyle 8 stroke:#0f8a74,color:#0f8a74;
+    classDef step fill:#eef1f8,stroke:#5b677d,color:#1f2937
+    classDef decision fill:#fdf2dc,stroke:#5b677d,color:#1f2937
+    classDef store fill:#e6eaff,stroke:#5b677d,color:#1f2937
+    classDef ok fill:#e3f4ef,stroke:#0f8a74,color:#0b4f43
+    classDef bad fill:#fbe7e3,stroke:#c0392b,color:#7a2118
+    class B,C,E,F,G,L,P,Q,A step
+    class D,H decision
+    class R,K store
+    class I ok
+    class J bad
+    linkStyle 4 stroke:#c0392b
+    linkStyle 9 stroke:#c0392b
+    linkStyle 8 stroke:#0f8a74
 ```
 
 <details>
