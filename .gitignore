@@ -1,6 +1,7 @@
+myenv/
 .env
-__pycache__/
-.pytest_cache/
 tickets.db
 chroma_db/
-myenv/
+__pycache__/
+*.pyc
+.pytest_cache/

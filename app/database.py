@@ -1,3 +1,6 @@
+
+
+import json
 import sqlite3
 
 
@@ -27,11 +30,24 @@ def init_db():
             coverage REAL NOT NULL,
             response TEXT NOT NULL,
             resolution TEXT NOT NULL,
-            escalation_reason TEXT NOT NULL
+            escalation_reason TEXT NOT NULL,
+            retrieved_context TEXT NOT NULL DEFAULT '[]'
         )
         """
     )
-# This function will: Take the processed ticket.Insert it into SQLite. Get the newly created ticket ID. Return that ID.    
+
+    # upgrade an old tickets.db that lacks the new column
+    columns = [row["name"] for row in connection.execute("PRAGMA table_info(tickets)")]
+    if "retrieved_context" not in columns:
+        connection.execute(
+            "ALTER TABLE tickets ADD COLUMN retrieved_context TEXT NOT NULL DEFAULT '[]'"
+        )
+
+    connection.commit()
+    connection.close()
+
+
+# Takes the processed ticket, inserts it into SQLite, and returns the new ticket ID.
 def save_ticket(
     subject,
     message,
@@ -52,9 +68,10 @@ def save_ticket(
             coverage,
             response,
             resolution,
-            escalation_reason
+            escalation_reason,
+            retrieved_context
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             subject,
@@ -68,6 +85,7 @@ def save_ticket(
             result["response"],
             result["resolution"],
             result["escalation_reason"],
+            json.dumps(result.get("retrieved_context", [])),
         ),
     )
 
@@ -77,7 +95,21 @@ def save_ticket(
 
     connection.close()
 
-    return ticket_id    
+    return ticket_id
+
+
+def _row_to_ticket(row, include_context=True):
+    ticket = dict(row)
+    ticket["prompt_injection_detected"] = bool(ticket["prompt_injection_detected"])
+
+    context = json.loads(ticket.get("retrieved_context") or "[]")
+    if include_context:
+        ticket["retrieved_context"] = context
+    else:
+        ticket.pop("retrieved_context", None)
+
+    return ticket
+
 
 def get_ticket(ticket_id):
     connection = get_connection()
@@ -92,18 +124,14 @@ def get_ticket(ticket_id):
     ).fetchone()
 
     connection.close()
- 
+
     if row is None:
         return None
 
-    ticket = dict(row)
+    return _row_to_ticket(row)
 
-    ticket["prompt_injection_detected"] = bool(
-        ticket["prompt_injection_detected"]
-    )
 
-    return ticket
-#Add a function to retrieve all tickets
+# Retrieves all tickets (without the bulky retrieved_context).
 def get_all_tickets():
     connection = get_connection()
 
@@ -116,17 +144,5 @@ def get_all_tickets():
     ).fetchall()
 
     connection.close()
-    tickets = []
 
-    for row in rows:
-        ticket = dict(row)
-
-        ticket["prompt_injection_detected"] = bool(
-            ticket["prompt_injection_detected"]
-        )
-
-        tickets.append(ticket)
-
-    return tickets
-
-
+    return [_row_to_ticket(row, include_context=False) for row in rows]

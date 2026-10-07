@@ -1,7 +1,7 @@
 # Pydantic will make sure subject and message are provided as strings.
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TicketCategory(str, Enum):
@@ -26,8 +26,10 @@ class TicketSentiment(str, Enum):
 
 
 class TicketCreate(BaseModel):
-    subject: str
-    message: str
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    subject: str = Field(..., min_length=3, max_length=200)
+    message: str = Field(..., min_length=5, max_length=5000)
     
 # TicketClassification represents what our AI produces:category priority sentiment confidence
 class TicketClassification(BaseModel):

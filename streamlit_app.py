@@ -3,9 +3,6 @@
 
 Run:  streamlit run streamlit_app.py
 Starts the FastAPI backend automatically (uvicorn app.main:app --reload) if it is not already running.
-Works with both response shapes:
-  * flat   : {category, priority, sentiment, confidence, resolution, escalation_reason, response, prompt_injection_detected}
-  * nested : {classification{}, decision{}, retrieval{}, security{}, response, suggested_reply}
 """
 import atexit
 import html
@@ -130,40 +127,42 @@ SAMPLES = {
 PRIORITY_TONE = {"Low": "teal", "Medium": "blue", "High": "amber", "Critical": "red"}
 SENTIMENT_TONE = {"Positive": "teal", "Neutral": "steel", "Negative": "red"}
 
-
 def normalize(raw: dict) -> dict:
-    """Map either API response shape onto one internal shape."""
-    if "classification" in raw:  # nested
-        c, d = raw["classification"], raw.get("decision", {})
-        sources = raw.get("retrieval", {}).get("sources", [])
-        return dict(
-            id=raw.get("id", "-"), category=c.get("category", "Other"), priority=c.get("priority", "Medium"),
-            sentiment=c.get("sentiment", "Neutral"), confidence=float(d.get("overall_confidence", c.get("confidence", 0))),
-            escalated=d.get("action") == "escalate_to_human" or raw.get("status") == "escalated",
-            reason="; ".join(d.get("reasons", [])) or "-", response=raw.get("response", ""),
-            injection=bool(raw.get("security", {}).get("injection_detected")), sources=sources,
-            coverage=raw.get("retrieval", {}).get("coverage"), draft=raw.get("suggested_reply"), raw=raw)
-    resolution = str(raw.get("resolution", "")).lower()  # flat
+    """Map the API response onto the shape the UI uses."""
     return dict(
-        id=raw.get("id", raw.get("ticket_id", "-")), category=raw.get("category", "Other"),
-        priority=raw.get("priority", "Medium"), sentiment=raw.get("sentiment", "Neutral"),
-        confidence=float(raw.get("confidence", 0)), escalated=resolution not in ("ai", "ai_resolve", "resolved_by_ai"),
-        reason=str(raw.get("escalation_reason", "-")), response=raw.get("response", ""),
-        injection=bool(raw.get("prompt_injection_detected")), sources=raw.get("sources", []) or [],
-        coverage=raw.get("coverage"), draft=raw.get("suggested_reply"), raw=raw)
+        id=raw.get("id", "-"),
+        category=str(raw.get("category", "Other")),
+        priority=str(raw.get("priority", "Medium")),
+        sentiment=str(raw.get("sentiment", "Neutral")),
+        confidence=float(raw.get("confidence", 0)),
+        escalated=str(raw.get("resolution", "")).lower() != "ai",
+        reason=str(raw.get("escalation_reason", "-")),
+        response=raw.get("response", ""),
+        injection=bool(raw.get("prompt_injection_detected")),
+        sources=raw.get("retrieved_context", []) or [],
+        coverage=raw.get("coverage"),
+        raw=raw,
+    )
 
-
+# def submit_ticket(subject: str, message: str) -> dict:
+#     """Send to the API. Tries the `message` field first, falls back to `body` (other backend variant)."""
+#     field = st.session_state.get("body_field", "message")
+#     for f in (field, "body" if field == "message" else "message"):
+#         r = requests.post(f"{API_URL}/tickets", json={"subject": subject, f: message}, timeout=120)
+#         if r.status_code in (200, 201):
+#             st.session_state["body_field"] = f
+#             return r.json()
+#         if r.status_code != 422:
+#             r.raise_for_status()
+#     r.raise_for_status()
 def submit_ticket(subject: str, message: str) -> dict:
-    """Send to the API. Tries the `message` field first, falls back to `body` (other backend variant)."""
-    field = st.session_state.get("body_field", "message")
-    for f in (field, "body" if field == "message" else "message"):
-        r = requests.post(f"{API_URL}/tickets", json={"subject": subject, f: message}, timeout=120)
-        if r.status_code in (200, 201):
-            st.session_state["body_field"] = f
-            return r.json()
-        if r.status_code != 422:
-            r.raise_for_status()
+    r = requests.post(
+        f"{API_URL}/tickets",
+        json={"subject": subject, "message": message},
+        timeout=120,
+    )
     r.raise_for_status()
+    return r.json()
 
 
 def pill(text, tone):
@@ -171,34 +170,53 @@ def pill(text, tone):
 
 
 def stations(n: dict) -> str:
-    srcs = len(n["sources"])
     reason = n["reason"].lower()
-    gap = "missing_kb" in reason or "knowledge base" in reason and n["escalated"] and not srcs
+    skipped = n["injection"] or "ai service unavailable" in reason
+    kb_down = "knowledge base unavailable" in reason
+    low_coverage = "does not contain enough" in reason
+    srcs = len(n["sources"])
+
+    if skipped:
+        retrieve = ("Skipped", "warn")
+    elif kb_down:
+        retrieve = ("Unavailable", "stop")
+    elif low_coverage:
+        retrieve = ("Low coverage", "warn")
+    else:
+        retrieve = (f"{srcs} sources", "ok")
+
     steps = [
-        ("Scan", "Injection caught" if n["injection"] else "Clean", "stop" if n["injection"] else "ok"),
-        ("Classify", n["category"], "ok"),
-        ("Retrieve", ("No coverage" if gap else (f"{srcs} sources" if srcs else "knowledgeBase checked")), "warn" if gap else "ok"),
-        ("Answer", "Held back" if n["escalated"] and ("ungrounded" in reason or gap) else "Grounded",
-         "warn" if n["escalated"] and ("ungrounded" in reason or gap) else "ok"),
-        ("Route", "Human agent" if n["escalated"] else "Automated", "stop" if n["escalated"] else "ok"),
+        ("Scan", "Injection caught" if n["injection"] else "Clean",
+         "stop" if n["injection"] else "ok"),
+        ("Classify", "Skipped" if skipped else n["category"],
+         "warn" if skipped else "ok"),
+        ("Retrieve", *retrieve),
+        ("Answer", "Held back" if n["escalated"] else "Grounded",
+         "warn" if n["escalated"] else "ok"),
+        ("Route", "Human agent" if n["escalated"] else "Automated",
+         "stop" if n["escalated"] else "ok"),
     ]
     return '<div class="stations">' + "".join(
-        f'<div class="station {cls}"><div class="name">{name}</div><div class="val">{html.escape(val)}</div></div>'
-        for name, val, cls in steps) + "</div>"
-
+        f'<div class="station {cls}"><div class="name">{name}</div>'
+        f'<div class="val">{html.escape(val)}</div></div>'
+        for name, val, cls in steps
+    ) + "</div>"
 
 def render_result(n: dict):
     if n["escalated"]:
-        head, cls, tag = "Sent for a human Ascalation", "human", "Needs a person"
+        head, cls, tag = "Sent to a human agent", "human", "Needs a person"
     else:
         head, cls, tag = "Resolved by AI", "ai", "Answered from the knowledge base"
     st.markdown(
         f'<div class="verdict {cls}"><div class="tag">{tag}</div><div class="big">{head}</div>'
-        f'<div class="why"><b>Why:</b> {html.escape(n["reason"])}</div></div>', unsafe_allow_html=True)
+        f'<div class="why"><b>Why:</b> {html.escape(n["reason"])}</div></div>',
+        unsafe_allow_html=True)
     st.markdown(stations(n), unsafe_allow_html=True)
     if n["injection"]:
-        st.markdown('<div class="guard"><b>Prompt injection detected.</b> The instruction-like text was removed, '
-                    'nothing in it was obeyed, and the ticket was routed to a person for review.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="guard"><b>Prompt injection detected.</b> This ticket was never sent '
+            'to the AI model and was routed to a person for review.</div>',
+            unsafe_allow_html=True)
 
     conf = max(0.0, min(1.0, n["confidence"]))
     color = "#0f8b7a" if conf >= 0.7 else "#b7791f" if conf >= 0.5 else "#c8402f"
@@ -211,26 +229,30 @@ def render_result(n: dict):
         f'<div class="bar"><i style="width:{conf*100:.0f}%;background:{color}"></i></div></div></div>',
         unsafe_allow_html=True)
 
-    t1, t2 = st.tabs(["Reply to customer", "Draft for agent" if n["draft"] else "Details"])
+    t1, t2 = st.tabs(["Reply to customer", "Sources & details"])
     with t1:
         with st.container(border=True):
             st.markdown(n["response"] or "_No response generated._")
     with t2:
-        if n["draft"]:
-            with st.container(border=True):
-                st.markdown(n["draft"])
-        else:
-            st.caption("No separate agent draft for this ticket.")
         if n["sources"]:
-            st.markdown("**Knowledge-base sources used**")
+            st.markdown("**Knowledge-base sources retrieved**")
             for s in n["sources"]:
-                st.markdown(f"- **{s.get('document', '?')}**, {s.get('section', '')}  \n  <span style='color:#5d6b7e'>{html.escape(s.get('excerpt', ''))}</span>",
-                            unsafe_allow_html=True)
+                st.markdown(
+                    f"- **{html.escape(str(s.get('source', '?')))}**, "
+                    f"{html.escape(str(s.get('section', '')))} "
+                    f"(page {s.get('page', '?')}, score {s.get('score', '?')})  \n"
+                    f"  <span style='color:#5d6b7e'>{html.escape(str(s.get('text', '')))}</span>",
+                    unsafe_allow_html=True)
+        else:
+            st.caption("No knowledge-base sources were retrieved for this ticket.")
         with st.expander("Raw API response"):
             st.json(n["raw"])
-    st.download_button("Download result as JSON", json.dumps(n["raw"], indent=2, ensure_ascii=False),
-                       file_name=f"{n['id']}.json", mime="application/json")
-
+    st.download_button(
+        "Download result as JSON",
+        json.dumps(n["raw"], indent=2, ensure_ascii=False),
+        file_name=f"ticket_{n['id']}.json",
+        mime="application/json",
+    )
 
 # --------------------------------------------------------------------------- state
 st.session_state.setdefault("history", [])
@@ -292,8 +314,11 @@ with tab_desk:
                 except requests.exceptions.Timeout:
                     st.error("The request timed out. Please try again.")
                 except requests.HTTPError as e:
-                    st.error(f"API error: {e.response.status_code}")
-                    st.code(e.response.text)
+                    if e.response.status_code == 422:
+                        st.error("Subject must be 3 to 200 characters and the message 5 to 5,000 characters.")
+                    else:
+                        st.error(f"API error: {e.response.status_code}")
+                        st.code(e.response.text)
     with right:
         st.subheader("Result")
         if st.session_state["current"]:
